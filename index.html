@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RunMultiple DAG Generator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet" type="text/css" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    
+    input, textarea {
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    
+    button {
+      margin-top: 10px;
+      padding: 10px 20px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    
+    .copy-button {
+      margin-left: 10px;
+      padding: 10px 20px;
+      background-color: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    
+    #dag-container {
+      display: flex;
+    }
+    
+    #dag-visualization {
+      width: 70%;
+      height: 400px;
+      border: 1px solid #ccc;
+    }
+    
+    #notebook-details {
+      width: 30%;
+      padding: 10px;
+      background-color: #f9f9f9;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    
+    .custom-property {
+      margin-top: 10px;
+    }
+    
+    .remove-property {
+      margin-left: 5px;
+      padding: 2px 5px;
+      background-color: #f44336;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>RunMultiple DAG Generator</h1>
+  
+  <button id="add-notebook">Add Notebook</button>
+  <button id="enable-dependency">Enable Dependency Creation</button>
+  
+  <div id="dag-container">
+    <div id="dag-visualization"></div>
+    
+    <div id="notebook-details">
+      <h2>Notebook Details</h2>
+      
+      <label for="name"><strong>Name:</strong></label>
+      <input type="text" id="name"><br>
+      
+      <label for="path">Path:</label>
+      <input type="text" id="path"><br>
+      
+      <label for="timeoutPerCellInSeconds">Timeout per Cell (in seconds):</label>
+      <input type="number" id="timeoutPerCellInSeconds"><br>
+      
+      <label for="retry">Retry:</label>
+      <input type="number" id="retry"><br>
+      
+      <label for="retryIntervalInSeconds">Retry Interval (in seconds):</label>
+      <input type="number" id="retryIntervalInSeconds"><br>
+      
+      <label for="args">Args (JSON):</label>
+      <textarea id="args"></textarea><br>
+      
+      <div id="custom-properties"></div>
+      
+      <button id="add-property">Add Custom Property</button><br>
+      
+      <button id="save-notebook">Save Notebook</button>
+    </div>
+  </div>
+  
+  <h2>DAG JSON</h2>
+  <textarea id="dagJSON" rows="10" readonly></textarea>
+  <button id="copyJSON" class="copy-button">Copy JSON</button>
+  
+  <script>
+    const dagVisualizationContainer = document.getElementById('dag-visualization');
+    const notebookDetailsContainer = document.getElementById('notebook-details');
+    const customPropertiesContainer = document.getElementById('custom-properties');
+    const addPropertyButton = document.getElementById('add-property');
+    const saveNotebookButton = document.getElementById('save-notebook');
+    const dagJSONTextarea = document.getElementById('dagJSON');
+    const copyJSONButton = document.getElementById('copyJSON');
+    const addNotebookButton = document.getElementById('add-notebook');
+    const enableDependencyButton = document.getElementById('enable-dependency');
+    
+    let network;
+    let nodes;
+    let edges;
+    let selectedNode;
+    let notebookCounter = 1;
+    let dependencyCreationEnabled = false;
+    
+    function initialize() {
+      nodes = new vis.DataSet();
+      edges = new vis.DataSet();
+      
+      const data = {
+        nodes: nodes,
+        edges: edges
+      };
+      
+      const options = {
+        layout: {
+          hierarchical: {
+            direction: 'UD',
+            sortMethod: 'directed'
+          }
+        },
+        edges: {
+          smooth: {
+            type: 'cubicBezier',
+            forceDirection: 'vertical',
+            roundness: 0.4
+          }
+        },
+        interaction: {
+          navigationButtons: true,
+          keyboard: true
+        },
+        manipulation: {
+          enabled: false,
+          addEdge: function(edgeData, callback) {
+            if (!dependencyCreationEnabled) {
+              return;
+            }
+            
+            if (edgeExists(edgeData.from, edgeData.to)) {
+              alert('Dependency already exists!');
+              callback(null);
+              return;
+            }
+            
+            if (hasCyclicalDependency(edgeData.from, edgeData.to)) {
+              alert('Cyclical dependencies are not allowed.');
+              callback(null);
+              return;
+            }
+            
+            const newEdge = {
+              from: edgeData.from,
+              to: edgeData.to,
+              arrows: 'to'
+            };
+            
+            callback(newEdge);
+            updateDAGJSON();
+          }
+        }
+      };
+      
+      network = new vis.Network(dagVisualizationContainer, data, options);
+      
+      network.on('selectNode', function(params) {
+        selectedNode = params.nodes[0];
+        showNotebookDetails(selectedNode);
+      });
+      
+      // Add initial notebook
+      addNotebook();
+    }
+    
+    function addNotebook() {
+      const notebookName = `Notebook ${notebookCounter}`;
+      notebookCounter++;
+      
+      const newNode = {
+        id: notebookName,
+        label: notebookName
+      };
+      
+      nodes.add(newNode);
+      showNotebookDetails(notebookName);
+      updateDAGJSON();
+    }
+    
+    function edgeExists(from, to) {
+      return edges.get().some(edge => edge.from === from && edge.to === to);
+    }
+    
+    function hasCyclicalDependency(from, to) {
+      const visited = new Set();
+      const stack = [from];
+      
+      while (stack.length > 0) {
+        const current = stack.pop();
+        visited.add(current);
+        
+        const outgoingEdges = edges.get().filter(edge => edge.from === current);
+        
+        for (const edge of outgoingEdges) {
+          if (edge.to === to) {
+            return true;
+          }
+          
+          if (!visited.has(edge.to)) {
+            stack.push(edge.to);
+          }
+        }
+      }
+      
+      return false;
+    }
+    
+    function showNotebookDetails(notebookName) {
+      const notebook = nodes.get(notebookName);
+      
+      document.getElementById('name').value = notebook.label || '';
+      document.getElementById('path').value = notebook.path || '';
+      document.getElementById('timeoutPerCellInSeconds').value = notebook.timeoutPerCellInSeconds || '';
+      document.getElementById('retry').value = notebook.retry || '';
+      document.getElementById('retryIntervalInSeconds').value = notebook.retryIntervalInSeconds || '';
+      document.getElementById('args').value = JSON.stringify(notebook.args) || '';
+      
+      customPropertiesContainer.innerHTML = '';
+      
+      if (notebook.customProperties) {
+        for (const [key, value] of Object.entries(notebook.customProperties)) {
+          const propertyDiv = document.createElement('div');
+          propertyDiv.classList.add('custom-property');
+          propertyDiv.innerHTML = `
+            <input type="text" class="property-name" placeholder="Property Name" value="${key}">
+            <input type="text" class="property-value" placeholder="Property Value" value="${value}">
+            <button class="remove-property">Remove</button>
+          `;
+          customPropertiesContainer.appendChild(propertyDiv);
+        }
+      }
+    }
+    
+    function saveNotebookDetails() {
+      const name = document.getElementById('name').value;
+      const path = document.getElementById('path').value;
+      const timeoutPerCellInSeconds = document.getElementById('timeoutPerCellInSeconds').value;
+      const retry = document.getElementById('retry').value;
+      const retryIntervalInSeconds = document.getElementById('retryIntervalInSeconds').value;
+      const args = document.getElementById('args').value;
+      
+      const customProperties = {};
+      const customPropertyDivs = customPropertiesContainer.querySelectorAll('.custom-property');
+      for (const propertyDiv of customPropertyDivs) {
+        const propertyName = propertyDiv.querySelector('.property-name').value;
+        const propertyValue = propertyDiv.querySelector('.property-value').value;
+        if (propertyName && propertyValue) {
+          customProperties[propertyName] = propertyValue;
+        }
+      }
+      
+      nodes.update({
+        id: selectedNode,
+        label: name,
+        path,
+        timeoutPerCellInSeconds: parseInt(timeoutPerCellInSeconds) || undefined,
+        retry: parseInt(retry) || undefined,
+        retryIntervalInSeconds: parseInt(retryIntervalInSeconds) || undefined,
+        args: args ? JSON.parse(args) : undefined,
+        customProperties
+      });
+      
+      updateDAGJSON();
+    }
+    
+    function updateDAGJSON() {
+      const activities = [];
+      
+      nodes.forEach(node => {
+        const activity = {
+          name: node.label,
+          path: node.path
+        };
+        
+        if (node.timeoutPerCellInSeconds) {
+          activity.timeoutPerCellInSeconds = node.timeoutPerCellInSeconds;
+        }
+        
+        if (node.retry) {
+          activity.retry = node.retry;
+        }
+        
+        if (node.retryIntervalInSeconds) {
+          activity.retryIntervalInSeconds = node.retryIntervalInSeconds;
+        }
+        
+        if (node.args) {
+          activity.args = node.args;
+        }
+        
+        const dependencies = edges.get().filter(edge => edge.to === node.id).map(edge => nodes.get(edge.from).label);
+        if (dependencies.length > 0) {
+          activity.dependencies = dependencies;
+        }
+        
+        activities.push(activity);
+      });
+      
+      const dag = {
+        activities
+      };
+      
+      dagJSONTextarea.value = JSON.stringify(dag, null, 2);
+    }
+    
+    addPropertyButton.addEventListener('click', function() {
+      const propertyDiv = document.createElement('div');
+      propertyDiv.classList.add('custom-property');
+      propertyDiv.innerHTML = `
+        <input type="text" class="property-name" placeholder="Property Name">
+        <input type="text" class="property-value" placeholder="Property Value">
+        <button class="remove-property">Remove</button>
+      `;
+      customPropertiesContainer.appendChild(propertyDiv);
+    });
+    
+    customPropertiesContainer.addEventListener('click', function(event) {
+      if (event.target.classList.contains('remove-property')) {
+        const propertyDiv = event.target.closest('.custom-property');
+        propertyDiv.remove();
+      }
+    });
+    
+    saveNotebookButton.addEventListener('click', saveNotebookDetails);
+    
+    copyJSONButton.addEventListener('click', function() {
+      dagJSONTextarea.select();
+      document.execCommand('copy');
+      alert('DAG JSON copied to clipboard!');
+    });
+    
+    addNotebookButton.addEventListener('click', addNotebook);
+    
+    enableDependencyButton.addEventListener('click', function() {
+      dependencyCreationEnabled = !dependencyCreationEnabled;
+      network.setOptions({
+        manipulation: {
+          enabled: dependencyCreationEnabled
+        }
+      });
+      enableDependencyButton.textContent = dependencyCreationEnabled ? 'Disable Dependency Creation' : 'Enable Dependency Creation';
+    });
+    
+    initialize();
+  </script>
+</body>
+</html>
